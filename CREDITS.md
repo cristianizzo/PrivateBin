@@ -25,6 +25,7 @@ Sébastien Sauvage - original idea and main developer
 * PunKeel - first docker container
 * thororm - Display of video, audio & PDF, drag & drop, preview of attachments
 * Harald Leithner - base58 encoding of key
+* Haocen - lots of bugfixes and UI improvements
 
 ## Translations
 * Hexalyse - French
@@ -43,3 +44,4 @@ Sébastien Sauvage - original idea and main developer
 * Péter Tabajdi - Hungarian
 * info-path - Czech
 * BigWax - Bulgarian
+* AndriiZ - Ukrainian

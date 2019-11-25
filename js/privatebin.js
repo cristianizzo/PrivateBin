@@ -6,21 +6,34 @@
  * @see       {@link https://github.com/PrivateBin/PrivateBin}
  * @copyright 2012 Sébastien SAUVAGE ({@link http://sebsauvage.net})
  * @license   {@link https://www.opensource.org/licenses/zlib-license.php The zlib/libpng License}
- * @version   1.3
+ * @version   1.3.1
  * @name      PrivateBin
  * @namespace
  */
 
-/** global: Base64 */
-/** global: DOMPurify */
-/** global: FileReader */
-/** global: RawDeflate */
-/** global: history */
-/** global: navigator */
-/** global: prettyPrint */
-/** global: prettyPrintOne */
-/** global: showdown */
-/** global: kjua */
+// global Base64, DOMPurify, FileReader, RawDeflate, history, navigator, prettyPrint, prettyPrintOne, showdown, kjua
+
+jQuery.fn.draghover = function() {
+    'use strict';
+    return this.each(function() {
+        let collection = $(),
+            self = $(this);
+  
+        self.on('dragenter', function(e) {
+            if (collection.length === 0) {
+                self.trigger('draghoverstart');
+            }
+            collection = collection.add(e.target);
+        });
+  
+        self.on('dragleave drop', function(e) {
+            collection = collection.not(e.target);
+            if (collection.length === 0) {
+                self.trigger('draghoverend');
+            }
+        });
+    });
+};
 
 // main application start, called when DOM is fully loaded
 jQuery(document).ready(function() {
@@ -390,6 +403,45 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             baseUri = null;
         };
 
+        /**
+         * calculate expiration date given initial date and expiration period
+         * 
+         * @name   Helper.calculateExpirationDate
+         * @function
+         * @param  {Date} initialDate - may not be empty
+         * @param  {string|number} expirationDisplayStringOrSecondsToExpire - may not be empty
+         * @return {Date}
+         */
+        me.calculateExpirationDate = function(initialDate, expirationDisplayStringOrSecondsToExpire) {
+            let expirationDate = new Date(initialDate);
+
+            const expirationDisplayStringToSecondsDict = {
+                '5min': 300,
+                '10min': 600,
+                '1hour': 3500,
+                '1day': 86400,
+                '1week': 604800,
+                '1month': 2592000,
+                '1year': 31536000,
+                'never': 0
+            };
+
+            let secondsToExpiration = expirationDisplayStringOrSecondsToExpire;
+            if (typeof expirationDisplayStringOrSecondsToExpire === 'string') {
+                secondsToExpiration = expirationDisplayStringToSecondsDict[expirationDisplayStringOrSecondsToExpire];
+            }
+            
+            if (typeof secondsToExpiration !== 'number') {
+                throw new Error('Cannot calculate expiration date.');
+            }
+            if (secondsToExpiration === 0) {
+                return null;
+            }
+
+            expirationDate = expirationDate.setUTCSeconds(expirationDate.getUTCSeconds() + secondsToExpiration);
+            return expirationDate;
+        }
+
         return me;
     })();
 
@@ -420,7 +472,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          * @prop   {string[]}
          * @readonly
          */
-        const supportedLanguages = ['bg', 'cs', 'de', 'es', 'fr', 'it', 'hu', 'no', 'nl', 'pl', 'pt', 'oc', 'ru', 'sl', 'zh'];
+        const supportedLanguages = ['bg', 'cs', 'de', 'es', 'fr', 'it', 'hu', 'no', 'nl', 'pl', 'pt', 'oc', 'ru', 'sl', 'uk', 'zh'];
 
         /**
          * built in language
@@ -506,8 +558,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                     // handle the error by attaching the language loaded event
                     let orgArguments = arguments;
                     $(document).on(languageLoadedEvent, function () {
-                        // log to show that the previous error could be mitigated
-                        console.warn('Fix missing translation of \'' + messageId + '\' with now loaded language ' + language);
                         // re-execute this function
                         me.translate.apply(this, orgArguments);
                     });
@@ -547,12 +597,11 @@ jQuery.PrivateBin = (function($, RawDeflate) {
 
             // if $element is given, apply text to element
             if ($element !== null) {
-                // get last text node of element
-                let content = $element.contents();
-                if (content.length > 1) {
-                    content[content.length - 1].nodeValue = ' ' + output;
-                } else {
+                // avoid HTML entity encoding if translation contains link
+                if (output.indexOf('<a') === -1) {
                     $element.text(output);
+                } else {
+                    $element.html(output);
                 }
             }
 
@@ -580,6 +629,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 case 'pl':
                     return n === 1 ? 0 : (n % 10 >= 2 && n %10 <=4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);
                 case 'ru':
+                case 'uk':
                     return n % 10 === 1 && n % 100 !== 11 ? 0 : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);
                 case 'sl':
                     return n % 100 === 1 ? 1 : (n % 100 === 2 ? 2 : (n % 100 === 3 || n % 100 === 4 ? 3 : 0));
@@ -762,15 +812,20 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          * @private
          * @param  {string} message
          * @param  {string} mode
+         * @param  {object} zlib
+         * @throws {string}
          * @return {ArrayBuffer} data
          */
-        async function compress(message, mode)
+        async function compress(message, mode, zlib)
         {
             message = stringToArraybuffer(
                 utf16To8(message)
             );
             if (mode === 'zlib') {
-                return z.deflate(message).buffer;
+                if (typeof zlib === 'undefined') {
+                    throw 'Error compressing paste, due to missing WebAssembly support.'
+                }
+                return zlib.deflate(message).buffer;
             }
             return message;
         }
@@ -784,13 +839,18 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          * @private
          * @param  {ArrayBuffer} data
          * @param  {string} mode
+         * @param  {object} zlib
+         * @throws {string}
          * @return {string} message
          */
-        async function decompress(data, mode)
+        async function decompress(data, mode, zlib)
         {
             if (mode === 'zlib' || mode === 'none') {
                 if (mode === 'zlib') {
-                    data = z.inflate(
+                    if (typeof zlib === 'undefined') {
+                        throw 'Error decompressing paste, due to missing WebAssembly support.'
+                    }
+                    data = zlib.inflate(
                         new Uint8Array(data)
                     ).buffer;
                 }
@@ -864,7 +924,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                         stringToArraybuffer(
                             utf16To8(password)
                         )
-                    );
+                    ).catch(Alert.showError);
                     password = Array.prototype.map.call(
                         new Uint8Array(passwordBuffer),
                         x => ('00' + x.toString(16)).slice(-2)
@@ -884,7 +944,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 {name: 'PBKDF2'}, // we use PBKDF2 for key derivation
                 false, // the key may not be exported
                 ['deriveKey'] // we may only use it for key derivation
-            );
+            ).catch(Alert.showError);
 
             // derive a stronger key for use with AES
             return window.crypto.subtle.deriveKey(
@@ -901,7 +961,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 },
                 false, // the key may not be exported
                 ['encrypt', 'decrypt'] // we may only use it for en- and decryption
-            );
+            ).catch(Alert.showError);
         }
 
         /**
@@ -938,18 +998,24 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          */
         me.cipher = async function(key, password, message, adata)
         {
+            let zlib = (await z);
             // AES in Galois Counter Mode, keysize 256 bit,
             // authentication tag 128 bit, 10000 iterations in key derivation
-            const spec = [
-                getRandomBytes(16),                     // initialization vector
-                getRandomBytes(8),                      // salt
-                100000,                                 // iterations
-                256,                                    // key size
-                128,                                    // tag size
-                'aes',                                  // algorithm
-                'gcm',                                  // algorithm mode
-                $('body').data('compression') || 'zlib' // compression
-            ], encodedSpec = [];
+            const compression = (
+                    typeof zlib === 'undefined' ?
+                    'none' : // client lacks support for WASM
+                    ($('body').data('compression') || 'zlib')
+                ),
+                spec = [
+                    getRandomBytes(16), // initialization vector
+                    getRandomBytes(8),  // salt
+                    100000,             // iterations
+                    256,                // key size
+                    128,                // tag size
+                    'aes',              // algorithm
+                    'gcm',              // algorithm mode
+                    compression         // compression
+                ], encodedSpec = [];
             for (let i = 0; i < spec.length; ++i) {
                 encodedSpec[i] = i < 2 ? btoa(spec[i]) : spec[i];
             }
@@ -968,8 +1034,8 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                         await window.crypto.subtle.encrypt(
                             cryptoSettings(JSON.stringify(adata), spec),
                             await deriveKey(key, password, spec),
-                            await compress(message, spec[7])
-                        )
+                            await compress(message, compression, zlib)
+                        ).catch(Alert.showError)
                     )
                 ),
                 adata
@@ -989,7 +1055,8 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          */
         me.decipher = async function(key, password, data)
         {
-            let adataString, spec, cipherMessage;
+            let adataString, spec, cipherMessage, plaintext;
+            let zlib = (await z);
             if (data instanceof Array) {
                 // version 2
                 adataString = JSON.stringify(data[1]);
@@ -1016,19 +1083,28 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             }
             spec[0] = atob(spec[0]);
             spec[1] = atob(spec[1]);
+            if (spec[7] === 'zlib') {
+                if (typeof zlib === 'undefined') {
+                    throw 'Error decompressing paste, due to missing WebAssembly support.'
+                }
+            }
             try {
-                return await decompress(
-                    await window.crypto.subtle.decrypt(
-                        cryptoSettings(adataString, spec),
-                        await deriveKey(key, password, spec),
-                        stringToArraybuffer(
-                            atob(cipherMessage)
-                        )
-                    ),
-                    spec[7]
+                plaintext = await window.crypto.subtle.decrypt(
+                    cryptoSettings(adataString, spec),
+                    await deriveKey(key, password, spec),
+                    stringToArraybuffer(
+                        atob(cipherMessage)
+                    )
                 );
             } catch(err) {
+                console.error(err);
                 return '';
+            }
+            try {
+                return await decompress(plaintext, spec[7], zlib);
+            } catch(err) {
+                Alert.showError(err);
+                return err;
             }
         };
 
@@ -1175,7 +1251,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         me.getPasteId = function()
         {
             const idRegEx = /^[a-z0-9]{16}$/;
-            const idRegExFind = /[a-z0-9]{16}/;
 
             // return cached value
             if (id !== null) {
@@ -1464,7 +1539,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         const alertType = [
             'loading', // not in bootstrap CSS, but using a plausible value here
             'info',    // status icon
-            'warning', // not used yet
+            'warning', // warning icon
             'danger'   // error icon
         ];
 
@@ -1508,28 +1583,35 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                     icon = null; // icons not supported in this case
                 }
             }
+            let $translationTarget = $element;
 
-            // handle icon
-            if (icon !== null && // icon was passed
-                icon !== currentIcon[id] // and it differs from current icon
-            ) {
-                let $glyphIcon = $element.find(':first');
+            // handle icon, if template uses one
+            const $glyphIcon = $element.find(':first');
+            if ($glyphIcon.length) {
+                // if there is an icon, we need to provide an inner element
+                // to translate the message into, instead of the parent
+                $translationTarget = $('<span>');
+                $element.html(' ').prepend($glyphIcon).append($translationTarget);
 
-                // remove (previous) icon
-                $glyphIcon.removeClass(currentIcon[id]);
+                if (icon !== null && // icon was passed
+                    icon !== currentIcon[id] // and it differs from current icon
+                ) {
+                    // remove (previous) icon
+                    $glyphIcon.removeClass(currentIcon[id]);
 
-                // any other thing as a string (e.g. 'null') (only) removes the icon
-                if (typeof icon === 'string') {
-                    // set new icon
-                    currentIcon[id] = 'glyphicon-' + icon;
-                    $glyphIcon.addClass(currentIcon[id]);
+                    // any other thing as a string (e.g. 'null') (only) removes the icon
+                    if (typeof icon === 'string') {
+                        // set new icon
+                        currentIcon[id] = 'glyphicon-' + icon;
+                        $glyphIcon.addClass(currentIcon[id]);
+                    }
                 }
             }
 
             // show text
             if (args !== null) {
                 // add jQuery object to it as first parameter
-                args.unshift($element);
+                args.unshift($translationTarget);
                 // pass it to I18n
                 I18n._.apply(this, args);
             }
@@ -1552,6 +1634,25 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         me.showStatus = function(message, icon)
         {
             handleNotification(1, $statusMessage, message, icon);
+        };
+
+        /**
+         * display a warning message
+         *
+         * This automatically passes the text to I18n for translation.
+         *
+         * @name   Alert.showWarning
+         * @function
+         * @param  {string|array} message     string, use an array for %s/%d options
+         * @param  {string|null}  icon        optional, the icon to show, default:
+         *                                    leave previous icon
+         */
+        me.showWarning = function(message, icon)
+        {
+            $errorMessage.find(':first')
+                         .removeClass(currentIcon[3])
+                         .addClass(currentIcon[2]);
+            handleNotification(2, $errorMessage, message, icon);
         };
 
         /**
@@ -1680,7 +1781,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             currentIcon = [
                 'glyphicon-time', // loading icon
                 'glyphicon-info-sign', // status icon
-                '', // reserved for warning, not used yet
+                'glyphicon-warning-sign', // warning icon
                 'glyphicon-alert' // error icon
             ];
         };
@@ -1711,8 +1812,58 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          */
         function sendToShortener()
         {
-            window.location.href = $shortenButton.data('shortener') +
-                                   encodeURIComponent($pasteUrl.attr('href'));
+            if ($shortenButton.hasClass('buttondisabled')) {
+                return;
+            }
+            $.ajax({
+                type: 'GET',
+                url: `${$shortenButton.data('shortener')}${encodeURIComponent($pasteUrl.attr('href'))}`,
+                headers: {'Accept': 'text/html, application/xhtml+xml, application/xml, application/json'},
+                processData: false,
+                timeout: 10000,
+                xhrFields: {
+                    withCredentials: false
+                },
+                success: function(response) {
+                    let responseString = response;
+                    if (typeof responseString === 'object') {
+                        responseString = JSON.stringify(responseString);
+                    }
+                    if (typeof responseString === 'string' && responseString.length > 0) {
+                        const shortUrlMatcher = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/g;
+                        const shortUrl = (responseString.match(shortUrlMatcher) || []).sort(function(a, b) {
+                            return a.length - b.length;
+                        })[0];
+                        if (typeof shortUrl === 'string' && shortUrl.length > 0) {
+                            $('#pastelink').html(
+                                I18n._(
+                                    'Your paste is <a id="pasteurl" href="%s">%s</a> <span id="copyhint">(Hit [Ctrl]+[c] to copy)</span>',
+                                    shortUrl, shortUrl
+                                )
+                            );
+                            // we disable the button to avoid calling shortener again
+                            $shortenButton.addClass('buttondisabled');
+                            // save newly created element
+                            $pasteUrl = $('#pasteurl');
+                            // we pre-select the link so that the user only has to [Ctrl]+[c] the link
+                            Helper.selectText($pasteUrl[0]);
+                            return;
+                        }
+                    }
+                    Alert.showError('Cannot parse response from URL shortener.');
+                }
+            })
+            .fail(function(data, textStatus, errorThrown) {
+                console.error(textStatus, errorThrown);
+                // we don't know why it failed, could be CORS of the external
+                // server not setup properly, in which case we follow old
+                // behavior to open it in new tab
+                window.open(
+                    `${$shortenButton.data('shortener')}${encodeURIComponent($pasteUrl.attr('href'))}`,
+                    '_blank',
+                    'noopener, noreferrer'
+                );
+            });
         }
 
         /**
@@ -1754,8 +1905,11 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             // and add click event
             $pasteUrl.click(pasteLinkClick);
 
-            // shorten button
+            // delete link
             $('#deletelink').html('<a href="' + deleteUrl + '">' + I18n._('Delete data') + '</a>');
+
+            // enable shortener button
+            $shortenButton.removeClass('buttondisabled');
 
             // show result
             $pasteSuccess.removeClass('hidden');
@@ -1780,10 +1934,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
 
                 Alert.showRemaining('FOR YOUR EYES ONLY. Don\'t close this window, this message can\'t be displayed again.');
                 $remainingTime.addClass('foryoureyesonly');
-
-                // discourage cloning (it cannot really be prevented)
-                TopNav.hideCloneButton();
-
             } else if (paste.getTimeToLive() > 0) {
                 // display paste expiration
                 let expiration = Helper.secondsToHuman(paste.getTimeToLive()),
@@ -2439,7 +2589,8 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             file,
             $fileInput,
             $dragAndDropFileName,
-            attachmentHasPreview = false;
+            attachmentHasPreview = false,
+            $dropzone;
 
         /**
          * sets the attachment but does not yet show it
@@ -2525,6 +2676,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             $attachmentLink.removeAttr('download');
             $attachmentLink.off('click');
             $attachmentPreview.html('');
+            $dragAndDropFileName.text('');
 
             AttachmentViewer.removeAttachmentData();
         };
@@ -2661,7 +2813,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 // revert loading status…
                 me.hideAttachment();
                 me.hideAttachmentPreview();
-                Alert.showError('Your browser does not support uploading encrypted files. Please use a newer browser.');
+                Alert.showWarning('Your browser does not support uploading encrypted files. Please use a newer browser.');
                 return;
             }
 
@@ -2673,18 +2825,23 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 $dragAndDropFileName.text(loadedFile.name);
             }
 
-            file = loadedFile;
+            if (typeof loadedFile !== 'undefined') {
+                file = loadedFile;
+                fileReader.onload = function (event) {
+                    const dataURL = event.target.result;
+                    attachmentData = dataURL;
 
-            fileReader.onload = function (event) {
-                const dataURL = event.target.result;
-                attachmentData = dataURL;
+                    if (Editor.isPreview()) {
+                        me.handleAttachmentPreview($attachmentPreview, dataURL);
+                        $attachmentPreview.removeClass('hidden');
+                    }
 
-                if (Editor.isPreview()) {
-                    me.setAttachment(dataURL, loadedFile.name || '');
-                    $attachmentPreview.removeClass('hidden');
-                }
-            };
-            fileReader.readAsDataURL(loadedFile);
+                    TopNav.highlightFileupload();
+                };
+                fileReader.readAsDataURL(loadedFile);
+            } else {
+                me.removeAttachmentData();
+            }
         }
 
         /**
@@ -2728,7 +2885,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                     );
                 } else if (mimeType.match(/\/pdf/i)) {
                     // Fallback for browsers, that don't support the vh unit
-                    var clientHeight = $(window).height();
+                    const clientHeight = $(window).height();
 
                     $targetElement.html(
                         $(document.createElement('embed'))
@@ -2755,15 +2912,20 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 return;
             }
 
-            const ignoreDragDrop = function(event) {
+            const handleDragEnterOrOver = function(event) {
                 event.stopPropagation();
                 event.preventDefault();
+                return false;
             };
 
-            const drop = function(event) {
+            const handleDrop = function(event) {
                 const evt = event.originalEvent;
                 evt.stopPropagation();
                 evt.preventDefault();
+
+                if (TopNav.isAttachmentReadonly()) {
+                    return false;
+                }
 
                 if ($fileInput) {
                     const file = evt.dataTransfer.files[0];
@@ -2777,9 +2939,24 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 }
             };
 
-            $(document).on('drop', drop);
-            $(document).on('dragenter', ignoreDragDrop);
-            $(document).on('dragover', ignoreDragDrop);
+            $(document).draghover().on({
+                'draghoverstart': function(e) {
+                    if (TopNav.isAttachmentReadonly()) {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        return false;
+                    }
+                    // show dropzone to indicate drop support
+                    $dropzone.removeClass('hidden');
+                },
+                'draghoverend': function() {
+                    $dropzone.addClass('hidden');
+                }
+            });
+
+            $(document).on('drop', handleDrop);
+            $(document).on('dragenter dragover', handleDragEnterOrOver);
+
             $fileInput.on('change', function () {
                 readFileData();
             });
@@ -2794,6 +2971,11 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          */
         function addClipboardEventHandler() {
             $(document).on('paste', function (event) {
+                if (TopNav.isAttachmentReadonly()) {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    return false;
+                }
                 const items = (event.clipboardData || event.originalEvent.clipboardData).items;
                 for (let i = 0; i < items.length; ++i) {
                     if (items[i].kind === 'file') {
@@ -2863,10 +3045,11 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         me.init = function()
         {
             $attachment = $('#attachment');
-            if($attachment.length){
+            $dragAndDropFileName = $('#dragAndDropFileName');
+            $dropzone = $('#dropzone');
+            if($attachment.length) {
                 $attachmentLink = $('#attachment a');
                 $attachmentPreview = $('#attachmentPreview');
-                $dragAndDropFileName = $('#dragAndDropFileName');
 
                 $fileInput = $('#file');
                 addDragDropHandler();
@@ -3189,9 +3372,10 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             $passwordInput,
             $rawTextButton,
             $qrCodeLink,
+            $emailLink,
             $sendButton,
             $retryButton,
-            pasteExpiration = '1week',
+            pasteExpiration = null,
             retryButtonCallback;
 
         /**
@@ -3215,7 +3399,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         }
 
         /**
-         * set the format on bootstrap templates in dropdown
+         * set the format on bootstrap templates in dropdown from user interaction
          *
          * @name   TopNav.updateFormat
          * @private
@@ -3400,6 +3584,133 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         }
 
         /**
+         * Template Email body.
+         * 
+         * @name   TopNav.templateEmailBody
+         * @private 
+         * @param {string} expirationDateString 
+         * @param {bool} isBurnafterreading 
+         */
+        function templateEmailBody(expirationDateString, isBurnafterreading)
+        {
+            const EOL = '\n';
+            const BULLET = '  - ';
+            let emailBody = '';
+            if (expirationDateString !== null || isBurnafterreading) {
+                emailBody += I18n._('Notice:');
+                emailBody += EOL;
+
+                if (expirationDateString !== null) {
+                    emailBody += EOL;
+                    emailBody += BULLET;
+                    emailBody += I18n._(
+                        'This link will expire after %s.',
+                        expirationDateString
+                    );
+                }
+                if (isBurnafterreading) {
+                    emailBody += EOL;
+                    emailBody += BULLET;
+                    emailBody += I18n._(
+                        'This link can only be accessed once, do not use back or refresh button in your browser.'
+                    );
+                }
+
+                emailBody += EOL;
+                emailBody += EOL;
+            }
+            emailBody += I18n._('Link:');
+            emailBody += EOL;
+            emailBody += `${window.location.href}`;
+            return emailBody;
+        }
+
+        /**
+         * Trigger Email send.
+         * 
+         * @name   TopNav.triggerEmailSend
+         * @private 
+         * @param {string} emailBody 
+         */
+        function triggerEmailSend(emailBody)
+        {
+            window.open(
+                `mailto:?body=${encodeURIComponent(emailBody)}`,
+                '_self',
+                'noopener, noreferrer'
+            );
+        }
+
+        /**
+         * Send Email with current paste (URL).
+         *
+         * @name   TopNav.sendEmail
+         * @private
+         * @function
+         * @param  {Date|null} expirationDate date of expiration
+         * @param  {bool} isBurnafterreading whether it is burn after reading
+         */
+        function sendEmail(expirationDate, isBurnafterreading)
+        {
+            const expirationDateRoundedToSecond = new Date(expirationDate);
+
+            // round down at least 30 seconds to make up for the delay of request
+            expirationDateRoundedToSecond.setUTCSeconds(
+                expirationDateRoundedToSecond.getUTCSeconds() - 30
+            );
+            expirationDateRoundedToSecond.setUTCSeconds(0);
+
+            const $emailconfirmmodal = $('#emailconfirmmodal');
+            if ($emailconfirmmodal.length > 0) {
+                if (expirationDate !== null) {
+                    $emailconfirmmodal.find('#emailconfirm-display').text(
+                        I18n._('Recipient may become aware of your timezone, convert time to UTC?')
+                    );
+                    const $emailconfirmTimezoneCurrent = $emailconfirmmodal.find('#emailconfirm-timezone-current');
+                    const $emailconfirmTimezoneUtc = $emailconfirmmodal.find('#emailconfirm-timezone-utc');
+                    $emailconfirmTimezoneCurrent.off('click.sendEmailCurrentTimezone');
+                    $emailconfirmTimezoneCurrent.on('click.sendEmailCurrentTimezone', function(expirationDateRoundedToSecond, isBurnafterreading) {
+                        return function() {
+                            const emailBody = templateEmailBody(expirationDateRoundedToSecond.toLocaleString(), isBurnafterreading);
+                            $emailconfirmmodal.modal('hide');
+                            triggerEmailSend(emailBody);
+                        };
+                    } (expirationDateRoundedToSecond, isBurnafterreading));
+                    $emailconfirmTimezoneUtc.off('click.sendEmailUtcTimezone');
+                    $emailconfirmTimezoneUtc.on('click.sendEmailUtcTimezone', function(expirationDateRoundedToSecond, isBurnafterreading) {
+                        return function() {
+                            const emailBody = templateEmailBody(expirationDateRoundedToSecond.toLocaleString(
+                                undefined,
+                                // we don't use Date.prototype.toUTCString() because we would like to avoid GMT
+                                { timeZone: 'UTC', dateStyle: 'long', timeStyle: 'long' }
+                            ), isBurnafterreading);
+                            $emailconfirmmodal.modal('hide');
+                            triggerEmailSend(emailBody);
+                        };
+                    } (expirationDateRoundedToSecond, isBurnafterreading));
+                    $emailconfirmmodal.modal('show');
+                } else {
+                    triggerEmailSend(templateEmailBody(null, isBurnafterreading));
+                }
+            } else {
+                let emailBody = '';
+                if (expirationDate !== null) {
+                    const expirationDateString = window.confirm(
+                        I18n._('Recipient may become aware of your timezone, convert time to UTC?')
+                    ) ? expirationDateRoundedToSecond.toLocaleString(
+                        undefined,
+                        // we don't use Date.prototype.toUTCString() because we would like to avoid GMT
+                        { timeZone: 'UTC', dateStyle: 'long', timeStyle: 'long' }
+                    ) : expirationDateRoundedToSecond.toLocaleString();
+                    emailBody = templateEmailBody(expirationDateString, isBurnafterreading);
+                } else {
+                    emailBody = templateEmailBody(null, isBurnafterreading);
+                }
+                triggerEmailSend(emailBody);
+            }
+        }
+
+        /**
          * Shows all navigation elements for viewing an existing paste
          *
          * @name   TopNav.showViewButtons
@@ -3435,6 +3746,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             $newButton.addClass('hidden');
             $rawTextButton.addClass('hidden');
             $qrCodeLink.addClass('hidden');
+            me.hideEmailButton();
 
             viewButtonsDisplayed = false;
         };
@@ -3533,6 +3845,50 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         }
 
         /**
+         * show the "email" button
+         * 
+         * @name   TopNav.showEmailbutton
+         * @function
+         * @param {int|undefined} optionalRemainingTimeInSeconds
+         */
+        me.showEmailButton = function(optionalRemainingTimeInSeconds)
+        {
+            try {
+                // we cache expiration date in closure to avoid inaccurate expiration datetime
+                const expirationDate = Helper.calculateExpirationDate(
+                    new Date(),
+                    typeof optionalRemainingTimeInSeconds === 'number' ? optionalRemainingTimeInSeconds : TopNav.getExpiration()
+                );
+                const isBurnafterreading = TopNav.getBurnAfterReading();
+
+                $emailLink.removeClass('hidden');
+                $emailLink.off('click.sendEmail');
+                $emailLink.on('click.sendEmail', function(expirationDate, isBurnafterreading) {
+                    return function() {
+                        sendEmail(expirationDate, isBurnafterreading);
+                    };
+                } (expirationDate, isBurnafterreading));
+            } catch (error) {
+                console.error(error);
+                Alert.showError(
+                    I18n._('Cannot calculate expiration date.')
+                );
+            }
+        }
+
+        /**
+         * hide the "email" button
+         * 
+         * @name   TopNav.hideEmailButton
+         * @function
+         */
+        me.hideEmailButton = function()
+        {
+            $emailLink.addClass('hidden');
+            $emailLink.off('click.sendEmail');
+        }
+
+        /**
          * only hides the clone button
          *
          * @name   TopNav.hideCloneButton
@@ -3555,6 +3911,30 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         };
 
         /**
+         * only hides the qr code button
+         * 
+         * @name   TopNav.hideQrCodeButton
+         * @function
+         */
+        me.hideQrCodeButton = function()
+        {
+            $qrCodeLink.addClass('hidden');
+        }
+
+        /**
+         * hide all irrelevant buttons when viewing burn after reading paste
+         * 
+         * @name   TopNav.hideBurnAfterReadingButtons
+         * @function
+         */
+        me.hideBurnAfterReadingButtons = function()
+        {
+            me.hideCloneButton();
+            me.hideQrCodeButton();
+            me.hideEmailButton();
+        }
+
+        /**
          * hides the file selector in attachment
          *
          * @name   TopNav.hideFileSelector
@@ -3575,6 +3955,18 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         me.showCustomAttachment = function()
         {
             $customAttachment.removeClass('hidden');
+        };
+
+        /**
+         * hides the custom attachment
+         * 
+         * @name  TopNav.hideCustomAttachment
+         * @function
+         */
+        me.hideCustomAttachment = function()
+        {
+            $customAttachment.addClass('hidden');
+            $fileWrap.removeClass('hidden');
         };
 
         /**
@@ -3629,7 +4021,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         /**
          * returns the state of the burn after reading checkbox
          *
-         * @name   TopNav.getExpiration
+         * @name   TopNav.getBurnAfterReading
          * @function
          * @return {bool}
          */
@@ -3659,7 +4051,8 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          */
         me.getPassword = function()
         {
-            return $passwordInput.val();
+            // when password is disabled $passwordInput.val() will return undefined
+            return $passwordInput.val() || '';
         };
 
         /**
@@ -3686,6 +4079,48 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         me.setRetryCallback = function(callback)
         {
             retryButtonCallback = callback;
+        }
+
+        /**
+         * Highlight file upload
+         * 
+         * @name  TopNav.highlightFileupload
+         * @function
+         */
+        me.highlightFileupload = function()
+        {
+            // visually indicate file uploaded
+            const $attachDropdownToggle = $attach.children('.dropdown-toggle');
+            if ($attachDropdownToggle.attr('aria-expanded') === 'false') {
+                $attachDropdownToggle.click();
+            }
+            $fileWrap.addClass('highlight');
+            setTimeout(function () {
+                $fileWrap.removeClass('highlight');
+            }, 300);
+        }
+
+        /**
+         * set the format on bootstrap templates in dropdown programmatically
+         * 
+         * @name    TopNav.setFormat
+         * @function
+         */
+        me.setFormat = function(format)
+        {
+            $formatter.parent().find(`a[data-format="${format}"]`).click();
+        }
+
+        /**
+         * returns if attachment dropdown is readonly, not editable
+         * 
+         * @name   TopNav.isAttachmentReadonly
+         * @function
+         * @return {bool}
+         */
+        me.isAttachmentReadonly = function()
+        {
+            return $attach.hasClass('hidden');
         }
 
         /**
@@ -3716,6 +4151,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             $retryButton = $('#retrybutton');
             $sendButton = $('#sendbutton');
             $qrCodeLink = $('#qrcodelink');
+            $emailLink = $('#emaillink');
 
             // bootstrap template drop down
             $('#language ul.dropdown-menu li a').click(setLanguage);
@@ -4037,8 +4473,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
     const PasteEncrypter = (function () {
         const me = {};
 
-        let requirementsChecked = false;
-
         /**
          * called after successful paste upload
          *
@@ -4062,6 +4496,10 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             history.pushState({type: 'newpaste'}, document.title, url);
 
             TopNav.showViewButtons();
+
+            // this cannot be grouped with showViewButtons due to remaining time calculation
+            TopNav.showEmailButton();
+
             TopNav.hideRawButton();
             Editor.hide();
 
@@ -4237,6 +4675,50 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 let attachment = AttachmentViewer.getAttachment();
                 cipherMessage['attachment'] = attachment[0];
                 cipherMessage['attachment_name'] = attachment[1];
+
+                // we need to retrieve data from blob if browser already parsed it in memory
+                if (typeof attachment[0] === 'string' && attachment[0].startsWith('blob:')) {
+                    Alert.showStatus(
+                        [
+                            'Retrieving cloned file \'%s\' from memory...',
+                            attachment[1]
+                        ],
+                        'copy'
+                    );
+                    try {
+                        const blobData = await $.ajax({
+                            type: 'GET',
+                            url: `${attachment[0]}`,
+                            processData: false,
+                            timeout: 10000,
+                            xhrFields: {
+                                withCredentials: false,
+                                responseType: 'blob'
+                            }
+                        });
+                        if (blobData instanceof window.Blob) {
+                            const fileReading = new Promise(function(resolve, reject) {
+                                const fileReader = new FileReader();
+                                fileReader.onload = function (event) {
+                                    resolve(event.target.result);
+                                };
+                                fileReader.onerror = function (error) {
+                                    reject(error);
+                                }
+                                fileReader.readAsDataURL(blobData);
+                            });
+                            cipherMessage['attachment'] = await fileReading;
+                        } else {
+                            const error = 'Cannot process attachment data.';
+                            Alert.showError(error);
+                            throw new TypeError(error);
+                        }
+                    } catch (error) {
+                        console.error(error);
+                        Alert.showError('Cannot retrieve attachment.');
+                        throw error;
+                    }
+                }
             }
 
             // encrypt message
@@ -4290,7 +4772,7 @@ jQuery.PrivateBin = (function($, RawDeflate) {
 
             // if all tries failed, we can only return an error
             if (plaindata.length === 0) {
-                throw 'failed to decipher data';
+                return false;
             }
 
             return plaindata;
@@ -4319,13 +4801,14 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 if (password.length === 0) {
                     throw 'waiting on user to provide a password';
                 } else {
-                    displayDecryptionError('failed to decipher paste text: Incorrect password?');
-                    throw 'waiting on user to provide correct password';
+                    Alert.hideLoading();
+                    // reset password, so it can be re-entered
+                    Prompt.reset();
+                    TopNav.showRetryButton();
+                    throw 'Could not decrypt data. Did you enter a wrong password? Retry with the button at the top.';
                 }
             }
 
-            let format = '',
-                text   = '';
             if (paste.v > 1) {
                 // version 2 paste
                 const pasteMessage = JSON.parse(pastePlain);
@@ -4413,27 +4896,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         }
 
         /**
-         * displays and logs decryption errors
-         *
-         * @name   PasteDecrypter.displayDecryptionError
-         * @private
-         * @function
-         * @param  {string} message
-         */
-        function displayDecryptionError(message)
-        {
-            Alert.hideLoading();
-
-            // log detailed error, but display generic translation
-            console.error(message);
-            Alert.showError('Could not decrypt data. Did you enter a wrong password? Retry with the button at the top.');
-
-            // reset password, so it can be re-entered
-            Prompt.reset();
-            TopNav.showRetryButton();
-        }
-
-        /**
          * show decrypted text in the display area, including discussion (if open)
          *
          * @name   PasteDecrypter.run
@@ -4475,170 +4937,21 @@ jQuery.PrivateBin = (function($, RawDeflate) {
                 .then(() => {
                     Alert.hideLoading();
                     TopNav.showViewButtons();
+
+                    // discourage cloning (it cannot really be prevented)
+                    if (paste.isBurnAfterReadingEnabled()) {
+                        TopNav.hideBurnAfterReadingButtons();
+                    } else {
+                        // we have to pass in remaining_time here
+                        TopNav.showEmailButton(paste.getTimeToLive());
+                    }
                 })
                 .catch((err) => {
                     // wait for the user to type in the password,
                     // then PasteDecrypter.run will be called again
-                    console.error(err);
+                    Alert.showError(err);
                 });
         };
-
-        return me;
-    })();
-
-
-    /**
-     * initial (security) check
-     *
-     * @name   InitialCheck
-     * @param  {object} window
-     * @param  {object} document
-     * @class
-     */
-    var InitialCheck = (function () {
-        var me = {};
-
-        /**
-         * blacklist of UserAgents (parts) known to belong to a bot
-         *
-         * @private
-         * @enum   {Array}
-         * @readonly
-         */
-        const badBotUA = [
-            'Bot',
-            'bot'
-        ];
-
-        /**
-         * check if the connection is insecure
-         *
-         * @private
-         * @name   InitialCheck.isInsecureConnection
-         * @function
-         * @return {bool}
-         */
-        function isInsecureConnection()
-        {
-            // use .isSecureContext if available
-            if (window.isSecureContext === true || window.isSecureContext === false) {
-                return !window.isSecureContext;
-            }
-
-            const url = new URL(window.location);
-
-            // HTTP is obviously insecure
-            if (url.protocol !== 'http:') {
-                return false;
-            }
-
-            // filter out actually secure connections over HTTP
-            for (const tld of ['.onion', '.i2p']) {
-                if (url.hostname.endsWith(tld)) {
-                    return false;
-                }
-            }
-
-            // whitelist localhost for development
-            for (const hostname of ['localhost', '127.0.0.1', '[::1]']) {
-                if (url.hostname === hostname) {
-                    return false;
-                }
-            }
-
-            // totally INSECURE http protocol!
-            return true;
-        }
-
-        /**
-         * checks whether this is a bot we dislike
-         *
-         * @private
-         * @name   InitialCheck.isBadBot
-         * @function
-         * @return {bool}
-         */
-        function isBadBot() {
-            // check whether a bot user agent part can be found in the current
-            // user agent
-            for (const UAfragment of badBotUA) {
-                if (navigator.userAgent.indexOf(UAfragment) >= 0) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /**
-         * checks whether this is an unsupported browser, via feature detection
-         *
-         * @private
-         * @name   InitialCheck.isOldBrowser
-         * @function
-         * @return {bool}
-         */
-        function isOldBrowser() {
-            // webcrypto support
-            if (typeof window.crypto !== 'object') {
-                return true;
-            }
-
-            if (typeof WebAssembly !== 'object' && typeof WebAssembly.instantiate !== 'function') {
-                return true;
-            }
-            try {
-                // [\0, 'a', 's', 'm', (uint_32) 1] - smallest valid wasm module
-                const module = new WebAssembly.Module(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
-                if (
-                    !(
-                        module instanceof WebAssembly.Module &&
-                        new WebAssembly.Instance(module) instanceof WebAssembly.Instance
-                    )
-                ) {
-                    return true;
-                }
-            } catch (e) {
-                return true;
-            }
-
-             // not checking for async/await, ES6, Promise or Uint8Array support,
-             // as most browsers introduced these earlier then webassembly and webcrypto:
-             // https://github.com/PrivateBin/PrivateBin/pull/431#issuecomment-493129359
-
-            return false;
-        }
-
-        /**
-         * init on application start, returns an all-clear signal
-         *
-         * @name   InitialCheck.init
-         * @function
-         * @return {bool}
-         */
-        me.init = function()
-        {
-            // prevent bots from viewing a paste and potentially deleting data
-            // when burn-after-reading is set
-            if (isBadBot()) {
-                Alert.showError('I love you too, bot…');
-                return false;
-            }
-
-            if (isOldBrowser()) {
-                // some browsers (Chrome based ones) would have webcrypto support if using HTTPS
-                if (isInsecureConnection()) {
-                    Alert.showError(['Your browser may require an HTTPS connection to support the WebCrypto API. Try <a href="%s">switching to HTTPS</a>.', 'https' + window.location.href.slice(4)]);
-                }
-                $('#oldnotice').removeClass('hidden');
-                return false;
-            }
-
-            if (isInsecureConnection()) {
-                $('#httpnotice').removeClass('hidden');
-            }
-
-            return true;
-        }
 
         return me;
     })();
@@ -4687,7 +5000,17 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             AttachmentViewer.removeAttachment();
 
             TopNav.showCreateButtons();
+
+            // newPaste could be called when user is on paste clone editing view
+            TopNav.hideCustomAttachment();
+            AttachmentViewer.clearDragAndDrop();
+            AttachmentViewer.removeAttachmentData();
+
             Alert.hideLoading();
+            history.pushState({type: 'create'}, document.title, Helper.baseUri());
+
+            // clear discussion
+            DiscussionViewer.prepareNewDiscussion();
         };
 
         /**
@@ -4796,11 +5119,32 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             }
 
             Editor.setText(PasteViewer.getText());
+            // also clone the format
+            TopNav.setFormat(PasteViewer.getFormat());
             PasteViewer.hide();
             Editor.show();
 
             TopNav.showCreateButtons();
+
+            // clear discussion
+            DiscussionViewer.prepareNewDiscussion();
         };
+
+        /**
+         * try initializing zlib or display a warning if it fails,
+         * extracted from main init to allow unit testing
+         *
+         * @name   Controller.initZ
+         * @function
+         */
+        me.initZ = function()
+        {
+            z = zlib.catch(function () {
+                if ($('body').data('compression') !== 'none') {
+                    Alert.showWarning('Your browser doesn\'t support WebAssembly, used for zlib compression. You can create uncompressed documents, but can\'t read compressed ones.');
+                }
+            });
+        }
 
         /**
          * application start
@@ -4808,12 +5152,19 @@ jQuery.PrivateBin = (function($, RawDeflate) {
          * @name   Controller.init
          * @function
          */
-        me.init = async function()
+        me.init = function()
         {
             // first load translations
             I18n.loadTranslations();
 
             DOMPurify.setConfig({SAFE_FOR_JQUERY: true});
+
+            // center all modals
+            $('.modal').on('show.bs.modal', function(e) {
+                $(e.target).css({
+                    display: 'flex'
+                });
+            });
 
             // initialize other modules/"classes"
             Alert.init();
@@ -4826,11 +5177,18 @@ jQuery.PrivateBin = (function($, RawDeflate) {
             Prompt.init();
             TopNav.init();
             UiHelper.init();
-            z = (await zlib);
-            if (!InitialCheck.init()) {
+
+            // check for legacy browsers before going any further
+            if (!Legacy.Check.getInit()) {
+                // Legacy check didn't complete, wait and try again
+                setTimeout(init, 500);
+                return;
+            }
+            if (!Legacy.Check.getStatus()) {
                 // something major is wrong, stop right away
                 return;
             }
+            me.initZ();
 
             // check whether existing paste needs to be shown
             try {
@@ -4870,7 +5228,6 @@ jQuery.PrivateBin = (function($, RawDeflate) {
         ServerInteraction: ServerInteraction,
         PasteEncrypter: PasteEncrypter,
         PasteDecrypter: PasteDecrypter,
-        InitialCheck: InitialCheck,
         Controller: Controller
     };
 })(jQuery, RawDeflate);

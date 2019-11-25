@@ -139,7 +139,7 @@ For reference or if you want to create the table schema for yourself to avoid ha
 ```sql
 CREATE TABLE prefix_paste (
     dataid CHAR(16) NOT NULL,
-    data BLOB,
+    data MEDIUMBLOB,
     postdate INT,
     expiredate INT,
     opendiscussion INT,
@@ -165,7 +165,7 @@ CREATE INDEX parent ON prefix_comment(pasteid);
 CREATE TABLE prefix_config (
     id CHAR(16) NOT NULL, value TEXT, PRIMARY KEY (id)
 );
-INSERT INTO prefix_config VALUES('VERSION', '1.3');
+INSERT INTO prefix_config VALUES('VERSION', '1.3.1');
 ```
 
 In **PostgreSQL**, the data, attachment, nickname and vizhash columns needs to be TEXT and not BLOB or MEDIUMBLOB.
